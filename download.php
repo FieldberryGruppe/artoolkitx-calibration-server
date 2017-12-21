@@ -26,6 +26,7 @@
  */
 
 define('LOGFILE', '/var/log/calib_camera_download.log');
+define('DEBUG_LOG', './calib_camera_download_debug.log');
 
 define("MAX_IDLE_TIME", 30); // seconds.
 
@@ -67,7 +68,7 @@ function cidr_match($ip, $range)
 }
 
 // Quick logging.
-$log = $_SERVER['REQUEST_TIME'] .','. date("c", $_SERVER['REQUEST_TIME']) .','. $remote_addr .','. $_REQUEST['version'] .','. $_REQUEST['os_name'] .','. $_REQUEST['os_arch'] .','. $_REQUEST['os_version'] .','. $_REQUEST['device_id'] .','. $_REQUEST['camera_index'] .','. $_REQUEST['camera_width'] .','. $_REQUEST['camera_height'] ."\n";
+$log = $_SERVER['REQUEST_TIME'] .','. date("c", $_SERVER['REQUEST_TIME']) .','. $_SERVER['REQUEST_METHOD'] . ',' . $remote_addr .','. $_REQUEST['version'] .','. $_REQUEST['os_name'] .','. $_REQUEST['os_arch'] .','. $_REQUEST['os_version'] .','. $_REQUEST['device_id'] .','. $_REQUEST['camera_index'] .','. $_REQUEST['camera_width'] .','. $_REQUEST['camera_height'] ."\n";
 file_put_contents(LOGFILE, $log, FILE_APPEND | LOCK_EX);
 
 // In production version, prior to servicing any request, should check a few things:
@@ -90,71 +91,63 @@ if (!empty($blacklist)) {
 header_remove('X-Powered-By');
 header_remove('MS-Author-Via');
 
-if (!isset($_REQUEST['version'])) {
-	bailWithMessage("400 Bad Request", "Missing parameter.");
-}
 
-if ($_REQUEST['version'] === '1') {
-	include_once('server_data.php');
+if($_SERVER['REQUEST_METHOD'] == "GET") {
+    
+      header('Content-Type: text/plain');
+      echo "This HTTP resource is designed to handle POSTed input";
+      echo "and not be retrieved with GET"; 
+} elseif($_SERVER['REQUEST_METHOD'] == "OPTIONS") {
+    // Tell the Client we support invocations from any origin and 
+    // that this preflight holds good for only 20 days
+    $allowedOrigin = $_SERVER['HTTP_ORIGIN'];
+    header('Access-Control-Allow-Origin: '. $allowedOrigin);
+    header('Access-Control-Allow-Methods: POST, OPTIONS');
+    //   header('Access-Control-Allow-Headers: X-PINGARUNER');
+    header('Access-Control-Max-Age: 1728000');
+    header("Content-Length: 0");
+    header("Content-Type: text/plain");
+} elseif($_SERVER['REQUEST_METHOD'] == "POST") {
 
-	// Check that the uploading client knows the shared secret.
-	if (strcmp(md5($serverAuthTokenDownload), $_REQUEST['ss']) != 0) {
-		bailWithMessage("400 Bad Request", "You didn't say the magic word.");
-	}
-	
-	if (!isset($_REQUEST['device_id'])) {
-		bailWithMessage("400 Bad Request", "Missing parameter.");
-	}
-	
-	//
-	// Look up.
-	//
-	
-	$mysqli = new mysqli($dbIP, $dbUser, $dbPass, $dbName, $dbPort);	
-	if ($mysqli->connect_errno) {
-	    // Failure to connect to the database server should just bomb.
-	    bailWithMessage('503 Service Unavailable', 'MySQL connect error ' . $mysqli->connect_errno . ': ' . $mysqli->connect_error);
-	}
-	
-	$sql = 'SELECT c1.camera_index, c1.camera_width, c1.camera_height, c1.aspect_ratio, c1.focal_length, c1.camera_para_base64 FROM calib_camera c1';
-	// Ensure we get only the row with lowest err_avg for each combination of device_id, focal_length, camera_index, camera_width, camera_height.
-	$sql .= ' LEFT JOIN calib_camera c2 ON c1.device_id = c2.device_id AND c1.focal_length = c2.focal_length AND c1.camera_index = c2.camera_index AND c1.camera_width = c2.camera_width AND c1.camera_height = c2.camera_height AND c1.err_avg > c2.err_avg WHERE c2.device_id IS NULL';
-	$sql .= ' AND c1.device_id=\'' . $mysqli->escape_string($_REQUEST['device_id']) . '\'';
-	if (!empty($_REQUEST['focal_length'])) $sql .= ' AND c1.focal_length=' . $mysqli->escape_string($_REQUEST['focal_length']);
-	if (!empty($_REQUEST['camera_index'])) $sql .= ' AND c1.camera_index=' . $mysqli->escape_string($_REQUEST['camera_index']);
-	if (!empty($_REQUEST['aspect_ratio'])) $sql .= ' AND c1.aspect_ratio=\'' . $mysqli->escape_string($_REQUEST['aspect_ratio']) . '\'';
-	if (!empty($_REQUEST['camera_width'])) $sql .= ' AND c1.camera_width=' . $mysqli->escape_string($_REQUEST['camera_width']);
-	if (!empty($_REQUEST['camera_height'])) $sql .= ' AND c1.camera_height=' . $mysqli->escape_string($_REQUEST['camera_height']);
-	$sql .= ';';
-
-    if (!($result = $mysqli->query($sql))) {
-        bailWithMessage("500 Internal Server Error", 'MySQL connect error ' . $mysqli->connect_errno . ': ' . $mysqli->connect_error);
+    if(DEBUG) {
+        $log = $_SERVER['REQUEST_TIME'] .' ,';
+        foreach($_REQUEST as $key => $value) {
+            $log .= $key .': ' . $value . ',';
+        }
+        $log .= "\n";
+        file_put_contents(DEBUG_LOG, $log, FILE_APPEND | LOCK_EX);                    
+    }
+    
+    if (!isset($_REQUEST['version'])) {
+        bailWithMessage("400 Bad Request", "Missing parameter.");
     }
 
-    if ($result->num_rows == 0) {
-        $result->close();
-        // No records found. Look for other devices with same marketing name.
+    if ($_REQUEST['version'] === '1') {
+        include_once('server_data.php');
         
-		// First, retrieve marketing name.
-		list(,$model) = explode('/', $_REQUEST['device_id']);
-		$sql = 'SELECT `Marketing Name` FROM google_play_supported_devices WHERE Model = \'' . $mysqli->escape_string($model) . '\';';
-		if (!$result = $mysqli->query($sql)) {
-            bailWithMessage("503 Service Unavailable", 'MySQL connect error ' . $mysqli->connect_errno . ': ' . $mysqli->connect_error);
+        // Check that the uploading client knows the shared secret.
+        if (strcmp(md5($serverAuthTokenDownload), $_REQUEST['ss']) != 0) {
+            bailWithMessage("400 Bad Request", "You didn't say the magic word.");
         }
-        if ($result->num_rows == 0) {
-        	// If no records found and no fallback found either, bail.
-        	bail("204 No Content");
+        
+        if (!isset($_REQUEST['device_id'])) {
+            bailWithMessage("400 Bad Request", "Missing parameter.");
         }
-        $row = $result->fetch_assoc();
-		$marketing_name = $row['Marketing Name'];
-		$result->close();
-		//bailWithMessage("500 Debug", $marketing_name);
-		
-		// Look up on alternate table on marketing name, rather than device ID.
-		$sql = 'SELECT c1.camera_index, c1.camera_width, c1.camera_height, c1.aspect_ratio, c1.focal_length, c1.camera_para_base64 FROM calib_camera c1 LEFT JOIN google_play_supported_devices g ON c1.device_id_model=g.Model';
+        
+        //
+        // Look up.
+        //
+        
+        $mysqli = new mysqli($dbIP, $dbUser, $dbPass, $dbName, $dbPort);
+        if ($mysqli->connect_errno) {
+            // Failure to connect to the database server should just bomb.
+            bailWithMessage('503 Service Unavailable', 'MySQL connect error ' . $mysqli->connect_errno . ': ' . $mysqli->connect_error);
+        }
+        
+        $sql = 'SELECT c1.camera_index, c1.camera_width, c1.camera_height, c1.aspect_ratio, c1.focal_length, c1.camera_para_base64 FROM calib_camera c1';
         // Ensure we get only the row with lowest err_avg for each combination of device_id, focal_length, camera_index, camera_width, camera_height.
         $sql .= ' LEFT JOIN calib_camera c2 ON c1.device_id = c2.device_id AND c1.focal_length = c2.focal_length AND c1.camera_index = c2.camera_index AND c1.camera_width = c2.camera_width AND c1.camera_height = c2.camera_height AND c1.err_avg > c2.err_avg WHERE c2.device_id IS NULL';
-        $sql .= ' AND g.`Marketing Name` = \'' . $mysqli->escape_string($marketing_name) . '\'';
+        $sql .= ' AND c1.device_id=\'' . $mysqli->escape_string($_REQUEST['device_id']) . '\'';
         if (!empty($_REQUEST['focal_length'])) $sql .= ' AND c1.focal_length=' . $mysqli->escape_string($_REQUEST['focal_length']);
         if (!empty($_REQUEST['camera_index'])) $sql .= ' AND c1.camera_index=' . $mysqli->escape_string($_REQUEST['camera_index']);
         if (!empty($_REQUEST['aspect_ratio'])) $sql .= ' AND c1.aspect_ratio=\'' . $mysqli->escape_string($_REQUEST['aspect_ratio']) . '\'';
@@ -162,38 +155,77 @@ if ($_REQUEST['version'] === '1') {
         if (!empty($_REQUEST['camera_height'])) $sql .= ' AND c1.camera_height=' . $mysqli->escape_string($_REQUEST['camera_height']);
         $sql .= ';';
 
-		if (!$result = $mysqli->query($sql)) {
+        if (!($result = $mysqli->query($sql))) {
             bailWithMessage("500 Internal Server Error", 'MySQL connect error ' . $mysqli->connect_errno . ': ' . $mysqli->connect_error);
         }
+
         if ($result->num_rows == 0) {
-        	// If no records found and no fallback found either, bail.
-        	bail("204 No Content");
+            $result->close();
+            // No records found. Look for other devices with same marketing name.
+            
+            // First, retrieve marketing name.
+            list(,$model) = explode('/', $_REQUEST['device_id']);
+            $sql = 'SELECT `Marketing Name` FROM google_play_supported_devices WHERE Model = \'' . $mysqli->escape_string($model) . '\';';
+            if (!$result = $mysqli->query($sql)) {
+                bailWithMessage("503 Service Unavailable", 'MySQL connect error ' . $mysqli->connect_errno . ': ' . $mysqli->connect_error);
+            }
+            if ($result->num_rows == 0) {
+                // If no records found and no fallback found either, bail.
+                bail("204 No Content");
+            }
+            $row = $result->fetch_assoc();
+            $marketing_name = $row['Marketing Name'];
+            $result->close();
+            //bailWithMessage("500 Debug", $marketing_name);
+            
+            // Look up on alternate table on marketing name, rather than device ID.
+            $sql = 'SELECT c1.camera_index, c1.camera_width, c1.camera_height, c1.aspect_ratio, c1.focal_length, c1.camera_para_base64 FROM calib_camera c1 LEFT JOIN google_play_supported_devices g ON c1.device_id_model=g.Model';
+            // Ensure we get only the row with lowest err_avg for each combination of device_id, focal_length, camera_index, camera_width, camera_height.
+            $sql .= ' LEFT JOIN calib_camera c2 ON c1.device_id = c2.device_id AND c1.focal_length = c2.focal_length AND c1.camera_index = c2.camera_index AND c1.camera_width = c2.camera_width AND c1.camera_height = c2.camera_height AND c1.err_avg > c2.err_avg WHERE c2.device_id IS NULL';
+            $sql .= ' AND g.`Marketing Name` = \'' . $mysqli->escape_string($marketing_name) . '\'';
+            if (!empty($_REQUEST['focal_length'])) $sql .= ' AND c1.focal_length=' . $mysqli->escape_string($_REQUEST['focal_length']);
+            if (!empty($_REQUEST['camera_index'])) $sql .= ' AND c1.camera_index=' . $mysqli->escape_string($_REQUEST['camera_index']);
+            if (!empty($_REQUEST['aspect_ratio'])) $sql .= ' AND c1.aspect_ratio=\'' . $mysqli->escape_string($_REQUEST['aspect_ratio']) . '\'';
+            if (!empty($_REQUEST['camera_width'])) $sql .= ' AND c1.camera_width=' . $mysqli->escape_string($_REQUEST['camera_width']);
+            if (!empty($_REQUEST['camera_height'])) $sql .= ' AND c1.camera_height=' . $mysqli->escape_string($_REQUEST['camera_height']);
+            $sql .= ';';
+
+            if (!$result = $mysqli->query($sql)) {
+                bailWithMessage("500 Internal Server Error", 'MySQL connect error ' . $mysqli->connect_errno . ': ' . $mysqli->connect_error);
+            }
+            if ($result->num_rows == 0) {
+                // If no records found and no fallback found either, bail.
+                bail("204 No Content");
+            }
+            // Fall through to case below for found record.
+            $fallback = 1;
         }
-		// Fall through to case below for found record.
-		$fallback = 1;
-    }
 
-    // One or more parameters found. Filter wanted values.
-    $filterFields = array_fill_keys(array('camera_index', 'camera_width', 'camera_height', 'aspect_ratio', 'focal_length', 'camera_para_base64'), 0);
-    $results = array();
+        // One or more parameters found. Filter wanted values.
+        $filterFields = array_fill_keys(array('camera_index', 'camera_width', 'camera_height', 'aspect_ratio', 'focal_length', 'camera_para_base64'), 0);
+        $results = array();
 
-    while ($row = $result->fetch_assoc()) {
-        $recordFiltered = array_intersect_key($row, $filterFields);
+        while ($row = $result->fetch_assoc()) {
+            $recordFiltered = array_intersect_key($row, $filterFields);
+            
+            // Note whether it's a fallback record.
+            if (isset($fallback)) $recordFiltered['fallback'] = $fallback;
+            
+            $results[] = $recordFiltered;
+        }
+        $result->close();
+        $mysqli->close();
         
-		// Note whether it's a fallback record.
-		if (isset($fallback)) $recordFiltered['fallback'] = $fallback;
+        // Return results in response body in JSON format.
+        //header("Content-type: application/json");
+        echo json_encode($results, JSON_NUMERIC_CHECK) . "\n";
         
-        $results[] = $recordFiltered;
+    } else {
+        // Unknown version.
+        bailWithMessage("400 Bad Request", "Client version not supported.");
+        }
     }
-	$result->close();
-	$mysqli->close();
-    
-    // Return results in response body in JSON format.
-    //header("Content-type: application/json");
-    echo json_encode($results, JSON_NUMERIC_CHECK) . "\n";
-    
-} else {
-    // Unknown version.
-	bailWithMessage("400 Bad Request", "Client version not supported.");
+else {
+    die("No Other Methods Allowed");
 }
 ?>
